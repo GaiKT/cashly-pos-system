@@ -1,0 +1,229 @@
+// Prisma Schema for POS System
+// This defines the complete data model for the Point of Sale system
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// Authentication and User Management Models
+model User {
+  id            String        @id @default(auto()) @map("_id") @db.ObjectId
+  email         String        @unique
+  name          String
+  avatar        String?       // Profile picture URL
+  role          Role          @default(CASHIER)
+  isActive      Boolean       @default(true)
+  lastLoginAt   DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  
+  // Authentication relationships
+  accounts      Account[]     // OAuth accounts (Google, Facebook)
+  sessions      Session[]     // Active sessions
+  password      Password?     // Email/password auth
+  
+  // Business relationships
+  transactions  Transaction[] // Transactions created by this user
+  expenses      Expense[]     // Expenses recorded by this user
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String  @db.ObjectId
+  type              String  // oauth, email
+  provider          String  // google, facebook, credentials
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  sessionToken String   @unique
+  userId       String   @db.ObjectId
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model Password {
+  id       String @id @default(auto()) @map("_id") @db.ObjectId
+  userId   String @unique @db.ObjectId
+  hash     String // bcrypt hashed password
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("passwords")
+}
+
+enum Role {
+  ADMIN     // Full system access, user management, expenses
+  MANAGER   // Inventory, sales reports, analytics
+  CASHIER   // POS transactions only
+}
+
+// Product and Inventory Models
+model Category {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  name        String    @unique
+  description String?
+  products    Product[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("categories")
+}
+
+model Product {
+  id           String            @id @default(auto()) @map("_id") @db.ObjectId
+  name         String
+  description  String?
+  sku          String            @unique
+  barcode      String?           @unique
+  price        Float             // Selling price
+  cost         Float             // Cost price for profit calculation
+  stock        Int               @default(0)
+  minStock     Int               @default(5) // Minimum stock alert level
+  maxStock     Int               @default(100) // Maximum stock capacity
+  categoryId   String            @db.ObjectId
+  category     Category          @relation(fields: [categoryId], references: [id])
+  transactions TransactionItem[]
+  isActive     Boolean           @default(true)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@map("products")
+  @@index([categoryId])
+  @@index([stock])
+}
+
+// Transaction and Sales Models
+model Transaction {
+  id            String            @id @default(auto()) @map("_id") @db.ObjectId
+  items         TransactionItem[]
+  subtotal      Float
+  tax           Float             @default(0)
+  discount      Float             @default(0)
+  total         Float
+  paymentMethod String            // cash, card, digital
+  status        String            @default("completed") // completed, refunded, cancelled
+  customerId    String?           @db.ObjectId
+  customer      Customer?         @relation(fields: [customerId], references: [id])
+  userId        String            @db.ObjectId // User who processed the transaction
+  user          User              @relation(fields: [userId], references: [id])
+  receiptId     String            @unique // For receipt lookup
+  notes         String?           // Additional transaction notes
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@map("transactions")
+  @@index([createdAt])
+  @@index([userId])
+  @@index([status])
+}
+
+model TransactionItem {
+  id            String      @id @default(auto()) @map("_id") @db.ObjectId
+  transactionId String      @db.ObjectId
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
+  productId     String      @db.ObjectId
+  product       Product     @relation(fields: [productId], references: [id])
+  quantity      Int
+  unitPrice     Float       // Price at time of sale
+  totalPrice    Float       // quantity * unitPrice
+  createdAt     DateTime    @default(now())
+
+  @@map("transaction_items")
+  @@index([transactionId])
+  @@index([productId])
+}
+
+model Customer {
+  id           String        @id @default(auto()) @map("_id") @db.ObjectId
+  name         String
+  email        String?       @unique
+  phone        String?
+  address      String?
+  transactions Transaction[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@map("customers")
+  @@index([phone])
+}
+
+// Financial Management Models
+model Expense {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  description String
+  amount      Float
+  category    String   // rent, utilities, supplies, marketing, etc.
+  vendor      String?
+  date        DateTime @default(now())
+  isRecurring Boolean  @default(false)
+  receiptUrl  String?  // For receipt image storage
+  userId      String   @db.ObjectId // User who recorded the expense
+  user        User     @relation(fields: [userId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("expenses")
+  @@index([date])
+  @@index([category])
+  @@index([userId])
+}
+
+// Analytics and Recommendations Models
+model StockRecommendation {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  productId      String   @db.ObjectId
+  currentStock   Int
+  recommendedQty Int
+  reason         String   // "low_stock", "high_demand", "seasonal_trend"
+  confidence     Float    // 0.0 to 1.0 confidence score
+  isActioned     Boolean  @default(false)
+  actionedAt     DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("stock_recommendations")
+  @@index([productId])
+  @@index([createdAt])
+  @@index([isActioned])
+}
+
+// Audit and Compliance Models
+model AuditLog {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String   @db.ObjectId
+  action     String   // "sale", "inventory_update", "user_create", etc.
+  resource   String   // "transaction", "product", "user", etc.
+  resourceId String?  // ID of the affected resource
+  details    Json?    // Additional action details
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@map("audit_logs")
+  @@index([userId])
+  @@index([action])
+  @@index([resource])
+  @@index([createdAt])
+}
